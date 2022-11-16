@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/FranciscoAguiar/gointensivo/internal/order/infra/database"
@@ -29,8 +30,29 @@ func main() {
 	uc := usecase.CalculateFinalPrice{OrderRepository: repository}
 
 	out := make(chan amqp.Delivery) //CHANNEL
-	go rabbitmq.Consume(ch, out)    //T2
-	for msg := range out {
+	//forever := make(chan bool)      //CHANNEL
+	go rabbitmq.Consume(ch, out) //T2
+	var qtdWorkers = 3
+	for i := 1; i <= qtdWorkers; i++ {
+		go worker(out, &uc, i) //criando mais threads
+	}
+	//<-forever
+	http.HandleFunc("/total", func(w http.ResponseWriter, r *http.Request) {
+		getTotalUC := usecase.GetTotalUseCase{OrderRepository: repository}
+		total, err := getTotalUC.Execute()
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(err.Error()))
+		}
+		json.NewEncoder(w).Encode(total)
+
+	})
+
+	http.ListenAndServe(":8080", nil) // criando servidor http
+}
+
+func worker(deliveryMessage <-chan amqp.Delivery, uc *usecase.CalculateFinalPrice, worderID int) {
+	for msg := range deliveryMessage {
 		var inputDTO usecase.OrderInputDTO
 		err := json.Unmarshal(msg.Body, &inputDTO)
 		if err != nil {
@@ -41,10 +63,7 @@ func main() {
 			panic(err)
 		}
 		msg.Ack(false)
-		fmt.Println(outputDTO)
-		time.Sleep(550 * time.Millisecond)
-
-		//println(string(msg.Body)) //T1
+		fmt.Printf("Worder %d has processd order %s \n", worderID, outputDTO.ID)
+		time.Sleep(1 * time.Second)
 	}
-
 }
